@@ -80,7 +80,7 @@ export function Header({
                 type="date"
                 value={today}
                 min="2016-03-28"
-                max="2016-05-22"
+                max="2016-04-24"
                 onChange={(e) => {
                   if (e.target.value) {
                     onChangeToday(e.target.value);

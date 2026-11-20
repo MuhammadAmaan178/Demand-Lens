@@ -1,19 +1,20 @@
 """
-DemandLens Flask Backend — Phase 2: Model & Data Loading
+DemandLens Flask Backend — Phase 3: Real Forecast API
 Loads all pre-trained LightGBM models and prepared datasets once on startup.
-Phase 1 mock endpoints are preserved and clearly labeled as demo endpoints
-until full live inference and database logic are connected in Phase 3/4.
+Provides real item catalogue and live multi-horizon forecasting (H7 & H28).
 
 Endpoints:
-  - GET  /health (and /api/health) — Service health, reports 503 if artifacts fail to load
-  - GET  /debug/status — Diagnostic report on model and dataset memory status
-  - GET  /items  (and /api/items) — [Mock Phase 1] List of items
-  - GET  /forecast (and /api/forecast) — [Mock Phase 1] Sample forecast
-  - GET  /anomalies (and /api/anomalies) — [Mock Phase 1] Sample anomalies
-  - POST /reorder (and /api/reorder) — [Mock Phase 1] Sample reorder advice
+  - GET  /health (and /api/health) — Service health check
+  - GET  /debug/status — Diagnostic report on model and dataset status
+  - GET  /items  (and /api/items) — [Phase 3 Real] All 3,049 Store CA_1 items
+  - GET  /forecast (and /api/forecast) — [Phase 3 Real] LightGBM H7 & H28 forecast
+  - GET  /anomalies (and /api/anomalies) — [Mock Phase 1] Sample anomalies (Phase 4)
+  - POST /reorder (and /api/reorder) — [Mock Phase 1] Sample reorder advice (Phase 5)
 """
 
 import logging
+import numpy as np
+import pandas as pd
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
@@ -84,80 +85,167 @@ def debug_status():
 
 
 # =======================================================================
-# 2. Phase 1 Endpoints (Temporarily preserved as labeled MOCK data)
-# NOTE: Real inference and data queries will be implemented in Phase 3/4.
+# Allowed pretend date range (Walmart M5 CA_1 Strict Validation period)
+# =======================================================================
+VALID_MIN_DATE = "2016-03-28"
+VALID_MAX_DATE = "2016-04-24"
+
+
+# =======================================================================
+# 2. Real Store CA_1 Item Catalogue (Phase 3)
 # =======================================================================
 
 @app.route("/items", methods=["GET"])
 @app.route("/api/items", methods=["GET"])
 def get_items():
     """
-    [TEMPORARY PHASE 1 MOCK ENDPOINT]
-    Returns static sample items for frontend compatibility until Phase 3/4.
+    Returns the real list of all 3,049 Store CA_1 items with department and sales group.
+    Populated directly from item_groups.csv loaded at startup.
     """
-    items = [
-        {"item_id": "FOODS_1_001", "department": "FOODS_1", "group": "fast sellers"},
-        {"item_id": "FOODS_3_795", "department": "FOODS_3", "group": "steady sellers"},
-        {"item_id": "FOODS_2_180", "department": "FOODS_2", "group": "slow sellers"},
-        {"item_id": "HOBBIES_1_001", "department": "HOBBIES_1", "group": "erratic sellers"},
-        {"item_id": "HOBBIES_1_234", "department": "HOBBIES_1", "group": "fast sellers"},
-        {"item_id": "HOUSEHOLD_1_001", "department": "HOUSEHOLD_1", "group": "steady sellers"},
-        {"item_id": "HOUSEHOLD_2_045", "department": "HOUSEHOLD_2", "group": "slow sellers"},
-    ]
+    if not registry.is_loaded:
+        return jsonify({
+            "error": "Backend models and datasets are not ready yet."
+        }), 503
+
     return jsonify({
-        "items": items,
-        "is_demo_data": True,
-        "source": "mock_phase1"
+        "items": registry.items_list,
+        "count": len(registry.items_list)
     }), 200
 
+
+# =======================================================================
+# 3. Real Forecast API (Phase 3)
+# =======================================================================
 
 @app.route("/forecast", methods=["GET"])
 @app.route("/api/forecast", methods=["GET"])
 def get_forecast():
     """
-    [TEMPORARY PHASE 1 MOCK ENDPOINT]
-    Returns simulated forecast data for frontend compatibility.
-    Real LightGBM model inference will be connected in Phase 3/4.
+    Phase 3 Real Forecast API.
+    Runs pre-trained LightGBM H7 and H28 models using features.build_features().
+    Strictly protects against data leakage by filtering historical data to date <= today.
     """
-    item_id = request.args.get("item_id", "FOODS_1_001")
-    today = request.args.get("today", "2016-05-01")
+    if not registry.is_loaded:
+        return jsonify({
+            "error": "Backend models and datasets are not ready yet."
+        }), 503
 
-    history = [
-        {"date": "2016-04-28", "sales": 3},
-        {"date": "2016-04-29", "sales": 5},
-        {"date": "2016-04-30", "sales": 4},
-        {"date": "2016-05-01", "sales": 6},
-    ]
+    item_id = request.args.get("item_id")
+    today = request.args.get("today")
 
-    forecast_7 = [
-        {"date": "2016-05-02", "value": 3.8},
-        {"date": "2016-05-03", "value": 4.1},
-        {"date": "2016-05-04", "value": 3.9},
-        {"date": "2016-05-05", "value": 4.5},
-        {"date": "2016-05-06", "value": 5.0},
-        {"date": "2016-05-07", "value": 5.2},
-        {"date": "2016-05-08", "value": 4.7},
-    ]
+    # 1. Parameter presence validation
+    if not item_id:
+        return jsonify({"error": "Missing required parameter: item_id"}), 400
+    if not today:
+        return jsonify({"error": "Missing required parameter: today"}), 400
 
-    forecast_28 = [
-        {"date": "2016-05-02", "value": 3.5},
-        {"date": "2016-05-03", "value": 3.7},
-        {"date": "2016-05-04", "value": 3.6},
-        {"date": "2016-05-05", "value": 4.0},
-        {"date": "2016-05-06", "value": 4.6},
-        {"date": "2016-05-07", "value": 4.8},
-        {"date": "2016-05-08", "value": 4.4},
-    ]
+    # 2. Item ID existence validation
+    if item_id not in registry.unique_items_set:
+        return jsonify({
+            "error": f"Item '{item_id}' not found in Store CA_1 catalogue."
+        }), 404
 
-    return jsonify({
-        "item_id": item_id,
-        "today": today,
-        "history": history,
-        "forecast_7": forecast_7,
-        "forecast_28": forecast_28,
-        "is_demo_data": True,
-        "source": "mock_phase1"
-    }), 200
+    # 3. Date format validation (YYYY-MM-DD)
+    try:
+        today_dt = pd.to_datetime(today, format="%Y-%m-%d", errors="raise")
+    except Exception:
+        return jsonify({
+            "error": "Invalid date format for 'today'. Expected YYYY-MM-DD."
+        }), 400
+
+    # 4. Pretend date range validation (2016-03-28 to 2016-04-24)
+    if today < VALID_MIN_DATE or today > VALID_MAX_DATE:
+        return jsonify({
+            "error": f"Date 'today' ({today}) is outside allowed validation period ({VALID_MIN_DATE} to {VALID_MAX_DATE})."
+        }), 400
+
+    try:
+        # 5. Extract item history with strict Data Leakage Protection
+        # Only historical records on or before 'today' are accessed
+        item_hist = registry.df_history[
+            (registry.df_history["item_id"] == item_id) &
+            (pd.to_datetime(registry.df_history["date"]) <= today_dt)
+        ].copy()
+
+        if item_hist.empty:
+            return jsonify({
+                "error": f"No historical records found for item '{item_id}' on or before {today}."
+            }), 404
+
+        # 6. Construct future forecast dates (strictly day + 1 to day + horizon)
+        future_dates_7 = [today_dt + pd.Timedelta(days=i) for i in range(1, 8)]
+        future_dates_28 = [today_dt + pd.Timedelta(days=i) for i in range(1, 29)]
+
+        # 7. Generate features and predict with 7-day model
+        feat_7 = features.build_features(
+            item_hist,
+            registry.df_calendar,
+            registry.feature_lists,
+            horizon=7,
+            future_dates=future_dates_7
+        )
+        cols_7 = registry.feature_lists["features_7"]
+        raw_preds_7 = registry.model_h7.predict(feat_7[cols_7])
+        preds_7 = np.clip(raw_preds_7, 0, None)
+
+        # 8. Generate features and predict with 28-day model
+        feat_28 = features.build_features(
+            item_hist,
+            registry.df_calendar,
+            registry.feature_lists,
+            horizon=28,
+            future_dates=future_dates_28
+        )
+        cols_28 = registry.feature_lists["features_28"]
+        raw_preds_28 = registry.model_h28.predict(feat_28[cols_28])
+        preds_28 = np.clip(raw_preds_28, 0, None)
+
+        # 9. Format historical actual sales (last 14 available days <= today)
+        recent_hist = item_hist.sort_values("date").tail(14)
+        history_list = [
+            {
+                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "sales": int(row["sales"]) if pd.notna(row["sales"]) and float(row["sales"]).is_integer() else round(float(row["sales"]), 1)
+            }
+            for _, row in recent_hist.iterrows()
+        ]
+
+        # 10. Format 7-day forecast
+        forecast_7_list = [
+            {
+                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "value": round(float(val), 2)
+            }
+            for (_, row), val in zip(feat_7.iterrows(), preds_7)
+        ]
+
+        # 11. Format 28-day forecast
+        forecast_28_list = [
+            {
+                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "value": round(float(val), 2)
+            }
+            for (_, row), val in zip(feat_28.iterrows(), preds_28)
+        ]
+
+        return jsonify({
+            "item_id": item_id,
+            "today": today,
+            "history": history_list,
+            "forecast_7": forecast_7_list,
+            "forecast_28": forecast_28_list
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error computing forecast for {item_id} at {today}: {e}", exc_info=True)
+        return jsonify({
+            "error": f"Failed to compute forecast: {str(e)}"
+        }), 500
+
+
+# =======================================================================
+# 4. Phase 1 Mock Endpoints (Preserved as labeled DEMO data until Phase 4/5)
+# =======================================================================
 
 
 @app.route("/anomalies", methods=["GET"])

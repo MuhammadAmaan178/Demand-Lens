@@ -119,13 +119,7 @@ class TestBackendPhase2(unittest.TestCase):
             registry.is_loaded = original_state
 
     def test_12_phase1_endpoints_labeled_as_mock(self):
-        """Verify Phase 1 compatibility endpoints clearly return is_demo_data: True."""
-        res_items = self.client.get("/api/items")
-        self.assertTrue(res_items.get_json().get("is_demo_data"))
-
-        res_forecast = self.client.get("/api/forecast")
-        self.assertTrue(res_forecast.get_json().get("is_demo_data"))
-
+        """Verify remaining Phase 1 compatibility endpoints (/anomalies, /reorder) return is_demo_data: True."""
         res_anomalies = self.client.get("/api/anomalies")
         self.assertTrue(res_anomalies.get_json().get("is_demo_data"))
 

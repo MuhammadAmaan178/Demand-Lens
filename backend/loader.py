@@ -52,7 +52,9 @@ class DataRegistry:
 
         # Metadata
         self.unique_items = []
+        self.unique_items_set = set()
         self.unique_item_count = 0
+        self.items_list = []
 
     def load_all(self):
         """Loads all required models and datasets with error handling and logging."""
@@ -134,6 +136,7 @@ class DataRegistry:
 
             # 10. Verify Store CA_1 Item Count (must be exactly 3,049)
             self.unique_items = sorted(self.df_item_groups["item_id"].dropna().unique().tolist())
+            self.unique_items_set = set(self.unique_items)
             self.unique_item_count = len(self.unique_items)
             logger.info(f"Verified unique CA_1 items count: {self.unique_item_count}")
 
@@ -141,6 +144,17 @@ class DataRegistry:
                 logger.warning(
                     f"Expected 3,049 items for CA_1 but found {self.unique_item_count}. Check dataset filtering."
                 )
+
+            # Pre-build structured item list for fast picker dropdowns (GET /items)
+            self.items_list = [
+                {
+                    "item_id": str(row["item_id"]),
+                    "department": "_".join(str(row["item_id"]).split("_")[:2]),
+                    "group": str(row["group"])
+                }
+                for _, row in self.df_item_groups.iterrows()
+            ]
+            logger.info(f"Pre-built {len(self.items_list)} item dictionary records for API dropdowns.")
 
             self.is_loaded = True
             logger.info(">>> ALL DEMANDLENS MODELS AND DATASETS LOADED SUCCESSFULLY <<<")

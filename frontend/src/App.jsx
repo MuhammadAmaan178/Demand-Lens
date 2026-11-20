@@ -17,8 +17,8 @@ export default function App() {
   // 1. Shared State: Selected Item ID (default to first CA_1 item)
   const [selectedItemId, setSelectedItemId] = useState('FOODS_1_001');
 
-  // 2. Shared State: Today (pretend) date, restricted between 2016-03-28 and 2016-05-22
-  const [today, setToday] = useState('2016-05-01');
+  // 2. Shared State: Today (pretend) date, restricted between 2016-03-28 and 2016-04-24
+  const [today, setToday] = useState('2016-04-24');
 
   // 3. Shared State: Items list loaded from API
   const [items, setItems] = useState([]);
