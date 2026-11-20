@@ -46,6 +46,7 @@ class DataRegistry:
         self.df_history = None
         self.df_calendar = None
         self.df_anomalies = None
+        self.df_flagged_anomalies = None
         self.df_item_groups = None
         self.df_group_thresholds = None
         self.df_item_error_spread = None
@@ -114,6 +115,11 @@ class DataRegistry:
                 if col not in self.df_anomalies.columns:
                     raise ValueError(f"Missing required column '{col}' in {ANOMALIES_VAL_PATH.name}")
             logger.info(f"Anomalies validation data loaded: {len(self.df_anomalies):,} rows")
+
+            # Pre-filter flagged anomalies (flagged_by != 'none') and index date for fast API queries
+            self.df_flagged_anomalies = self.df_anomalies[self.df_anomalies["flagged_by"] != "none"].copy()
+            self.df_flagged_anomalies["date_dt"] = pd.to_datetime(self.df_flagged_anomalies["date"])
+            logger.info(f"Pre-filtered {len(self.df_flagged_anomalies):,} flagged anomaly events.")
 
             # 7. Load Item Groups (CSV)
             logger.info(f"Loading item groups from: {ITEM_GROUPS_PATH.name}")

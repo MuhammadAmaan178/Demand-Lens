@@ -1,14 +1,15 @@
 """
-DemandLens Flask Backend — Phase 3: Real Forecast API
+DemandLens Flask Backend — Phase 4: Real Anomaly Detection API
 Loads all pre-trained LightGBM models and prepared datasets once on startup.
-Provides real item catalogue and live multi-horizon forecasting (H7 & H28).
+Provides real item catalogue, live multi-horizon forecasting (H7 & H28),
+and real historical anomaly detection queries (H7 validation).
 
 Endpoints:
   - GET  /health (and /api/health) — Service health check
   - GET  /debug/status — Diagnostic report on model and dataset status
   - GET  /items  (and /api/items) — [Phase 3 Real] All 3,049 Store CA_1 items
   - GET  /forecast (and /api/forecast) — [Phase 3 Real] LightGBM H7 & H28 forecast
-  - GET  /anomalies (and /api/anomalies) — [Mock Phase 1] Sample anomalies (Phase 4)
+  - GET  /anomalies (and /api/anomalies) — [Phase 4 Real] H7 validation anomaly events
   - POST /reorder (and /api/reorder) — [Mock Phase 1] Sample reorder advice (Phase 5)
 """
 
@@ -244,61 +245,120 @@ def get_forecast():
 
 
 # =======================================================================
-# 4. Phase 1 Mock Endpoints (Preserved as labeled DEMO data until Phase 4/5)
+# 4. Real Anomaly Detection API (Phase 4)
 # =======================================================================
-
 
 @app.route("/anomalies", methods=["GET"])
 @app.route("/api/anomalies", methods=["GET"])
 def get_anomalies():
     """
-    [TEMPORARY PHASE 1 MOCK ENDPOINT]
-    Returns simulated anomaly events for frontend compatibility.
-    Real validation anomaly queries will be connected in Phase 3/4.
+    Phase 4 Real Anomaly Detection API.
+    Queries pre-computed H7 validation anomalies from anomalies_validation.parquet.
+    Filters records up to and including 'today' (strictly no future leakage).
+    Supports optional 'item_id' filter.
+    Returns clear 400 Bad Request for invalid/out-of-range dates or unknown item IDs.
     """
-    today = request.args.get("today", "2016-05-01")
-    item_id = request.args.get("item_id", "")
+    if not registry.is_loaded:
+        return jsonify({
+            "error": "Backend models and datasets are not ready yet."
+        }), 503
 
-    anomalies = [
-        {
-            "item_id": "FOODS_1_001",
-            "date": "2016-04-20",
-            "sales": 15,
-            "forecast": 4.1,
-            "direction": "spike",
-            "reason": "event",
-            "flagged_by": "both"
-        },
-        {
-            "item_id": "FOODS_1_001",
-            "date": "2016-04-12",
-            "sales": 0,
-            "forecast": 3.8,
-            "direction": "drop",
-            "reason": "unexplained",
-            "flagged_by": "rule"
-        },
-        {
-            "item_id": "FOODS_3_795",
-            "date": "2016-04-25",
-            "sales": 18,
-            "forecast": 5.1,
-            "direction": "spike",
-            "reason": "price change",
-            "flagged_by": "both"
+    today = request.args.get("today")
+    item_id = request.args.get("item_id", "").strip()
+
+    # 1. Parameter presence validation for 'today'
+    if not today:
+        return jsonify({"error": "Missing required parameter: today"}), 400
+
+    # 2. Date format validation (YYYY-MM-DD)
+    try:
+        today_dt = pd.to_datetime(today, format="%Y-%m-%d", errors="raise")
+    except Exception:
+        return jsonify({
+            "error": "Invalid date format for 'today'. Expected YYYY-MM-DD."
+        }), 400
+
+    # 3. Allowed validation date range (2016-03-28 to 2016-04-24)
+    if today < VALID_MIN_DATE or today > VALID_MAX_DATE:
+        return jsonify({
+            "error": f"Date 'today' ({today}) is outside allowed validation period ({VALID_MIN_DATE} to {VALID_MAX_DATE})."
+        }), 400
+
+    # 4. Item ID validation if provided
+    if item_id and item_id not in registry.unique_items_set:
+        return jsonify({
+            "error": f"Item '{item_id}' not found in Store CA_1 catalogue."
+        }), 400
+
+    try:
+        # Filter pre-loaded flagged anomalies on or before today
+        df = registry.df_flagged_anomalies
+        mask = df["date_dt"] <= today_dt
+        if item_id:
+            mask = mask & (df["item_id"] == item_id)
+
+        filtered = df[mask].sort_values(by=["date", "item_id"]).copy()
+
+        # Flag mapping dictionary to align with frontend filter options
+        flag_map = {
+            "rule_1": "rule",
+            "isolation_forest": "isolation",
+            "both": "both"
         }
-    ]
 
-    filtered = [
-        a for a in anomalies
-        if (not item_id or a["item_id"] == item_id) and a["date"] <= today
-    ]
+        anomalies_list = []
+        for _, row in filtered.iterrows():
+            direction = str(row["direction"])
+            # If direction was normal in isolation forest outlier, assign spike/drop by residual
+            if direction == "normal":
+                direction = "spike" if float(row["sales"]) >= float(row["forecast"]) else "drop"
 
-    return jsonify({
-        "anomalies": filtered,
-        "is_demo_data": True,
-        "source": "mock_phase1"
-    }), 200
+            anomalies_list.append({
+                "item_id": str(row["item_id"]),
+                "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
+                "sales": int(row["sales"]),
+                "forecast": round(float(row["forecast"]), 2),
+                "direction": direction,
+                "reason": str(row["reason"]),
+                "flagged_by": flag_map.get(str(row["flagged_by"]), str(row["flagged_by"]))
+            })
+
+        # Summary statistics matching returned records
+        summary = {
+            "total": len(anomalies_list),
+            "spikes": sum(1 for a in anomalies_list if a["direction"] == "spike"),
+            "drops": sum(1 for a in anomalies_list if a["direction"] == "drop"),
+            "by_reason": {
+                "price_change": sum(1 for a in anomalies_list if a["reason"] == "price change"),
+                "event": sum(1 for a in anomalies_list if "event" in a["reason"].lower()),
+                "snap_day": sum(1 for a in anomalies_list if "snap" in a["reason"].lower()),
+                "unexplained": sum(1 for a in anomalies_list if "unexplained" in a["reason"].lower()),
+            },
+            "by_flag": {
+                "rule": sum(1 for a in anomalies_list if a["flagged_by"] == "rule"),
+                "isolation": sum(1 for a in anomalies_list if a["flagged_by"] == "isolation"),
+                "both": sum(1 for a in anomalies_list if a["flagged_by"] == "both"),
+            }
+        }
+
+        return jsonify({
+            "today": today,
+            "item_id": item_id if item_id else None,
+            "anomalies": anomalies_list,
+            "count": len(anomalies_list),
+            "summary": summary
+        }), 200
+
+    except Exception as e:
+        logger.error(f"Error querying anomalies for today={today}, item={item_id}: {e}", exc_info=True)
+        return jsonify({
+            "error": f"Failed to query anomalies: {str(e)}"
+        }), 500
+
+
+# =======================================================================
+# 5. Phase 1 Mock Endpoints (Preserved as labeled DEMO data until Phase 5)
+# =======================================================================
 
 
 @app.route("/reorder", methods=["POST"])
