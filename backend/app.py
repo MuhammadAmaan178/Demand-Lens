@@ -1,33 +1,100 @@
 """
-DemandLens Flask Backend — Phase 1 Skeleton
-Provides the agreed REST API routes for DemandLens Store CA_1.
+DemandLens Flask Backend — Phase 2: Model & Data Loading
+Loads all pre-trained LightGBM models and prepared datasets once on startup.
+Phase 1 mock endpoints are preserved and clearly labeled as demo endpoints
+until full live inference and database logic are connected in Phase 3/4.
+
 Endpoints:
-  - GET  /health (and /api/health)
-  - GET  /items  (and /api/items)
-  - GET  /forecast (and /api/forecast)
-  - GET  /anomalies (and /api/anomalies)
-  - POST /reorder (and /api/reorder)
+  - GET  /health (and /api/health) — Service health, reports 503 if artifacts fail to load
+  - GET  /debug/status — Diagnostic report on model and dataset memory status
+  - GET  /items  (and /api/items) — [Mock Phase 1] List of items
+  - GET  /forecast (and /api/forecast) — [Mock Phase 1] Sample forecast
+  - GET  /anomalies (and /api/anomalies) — [Mock Phase 1] Sample anomalies
+  - POST /reorder (and /api/reorder) — [Mock Phase 1] Sample reorder advice
 """
 
+import logging
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
+# Import feature engineering and reorder business modules (logic untouched)
+import features
+import reorder
+
+# Import DataRegistry for Phase 2 pre-trained models and datasets
+from loader import registry
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+logger = logging.getLogger("DemandLens.App")
+
 app = Flask(__name__)
-# Enable CORS so the React frontend on any port can communicate with the backend
 CORS(app)
 
+# Load all models and datasets once when the Flask application starts
+startup_error = None
+try:
+    registry.load_all()
+    logger.info("DemandLens Phase 2 models and datasets successfully loaded into memory.")
+except Exception as err:
+    startup_error = str(err)
+    logger.error(f"Startup artifact loading failed: {err}")
 
-# --- 1. Health Check Endpoint ---
+
+# =======================================================================
+# 1. Health & Diagnostic Endpoints (Phase 2)
+# =======================================================================
+
 @app.route("/health", methods=["GET"])
 @app.route("/api/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok", "service": "DemandLens Backend", "version": "1.0.0"}), 200
+    """
+    Health check endpoint.
+    Reports 200 OK only when models and datasets are fully loaded.
+    Reports 503 Service Unavailable if artifact loading has failed.
+    """
+    if not registry.is_loaded:
+        return jsonify({
+            "status": "not_ready",
+            "service": "DemandLens Backend",
+            "version": "1.0.0",
+            "error": "Required models or datasets failed to load. See /debug/status for diagnosis."
+        }), 503
+
+    return jsonify({
+        "status": "ok",
+        "service": "DemandLens Backend",
+        "version": "1.0.0",
+        "artifacts": "loaded"
+    }), 200
 
 
-# --- 2. Items List Endpoint ---
+@app.route("/debug/status", methods=["GET"])
+def debug_status():
+    """
+    Diagnostic status endpoint.
+    Reports whether required models, datasets, and feature lists loaded successfully.
+    Does NOT expose raw file contents or sensitive host filesystem paths.
+    """
+    summary = registry.get_status_summary()
+    http_code = 200 if summary.get("status") == "ready" else 500
+    return jsonify(summary), http_code
+
+
+# =======================================================================
+# 2. Phase 1 Endpoints (Temporarily preserved as labeled MOCK data)
+# NOTE: Real inference and data queries will be implemented in Phase 3/4.
+# =======================================================================
+
 @app.route("/items", methods=["GET"])
 @app.route("/api/items", methods=["GET"])
 def get_items():
+    """
+    [TEMPORARY PHASE 1 MOCK ENDPOINT]
+    Returns static sample items for frontend compatibility until Phase 3/4.
+    """
     items = [
         {"item_id": "FOODS_1_001", "department": "FOODS_1", "group": "fast sellers"},
         {"item_id": "FOODS_3_795", "department": "FOODS_3", "group": "steady sellers"},
@@ -37,17 +104,24 @@ def get_items():
         {"item_id": "HOUSEHOLD_1_001", "department": "HOUSEHOLD_1", "group": "steady sellers"},
         {"item_id": "HOUSEHOLD_2_045", "department": "HOUSEHOLD_2", "group": "slow sellers"},
     ]
-    return jsonify({"items": items}), 200
+    return jsonify({
+        "items": items,
+        "is_demo_data": True,
+        "source": "mock_phase1"
+    }), 200
 
 
-# --- 3. Forecast Endpoint ---
 @app.route("/forecast", methods=["GET"])
 @app.route("/api/forecast", methods=["GET"])
 def get_forecast():
+    """
+    [TEMPORARY PHASE 1 MOCK ENDPOINT]
+    Returns simulated forecast data for frontend compatibility.
+    Real LightGBM model inference will be connected in Phase 3/4.
+    """
     item_id = request.args.get("item_id", "FOODS_1_001")
     today = request.args.get("today", "2016-05-01")
 
-    # Sample response matching Part 8 of DemandLens_Remaining_Work_Guide.pdf
     history = [
         {"date": "2016-04-28", "sales": 3},
         {"date": "2016-04-29", "sales": 5},
@@ -80,14 +154,20 @@ def get_forecast():
         "today": today,
         "history": history,
         "forecast_7": forecast_7,
-        "forecast_28": forecast_28
+        "forecast_28": forecast_28,
+        "is_demo_data": True,
+        "source": "mock_phase1"
     }), 200
 
 
-# --- 4. Anomalies Endpoint ---
 @app.route("/anomalies", methods=["GET"])
 @app.route("/api/anomalies", methods=["GET"])
 def get_anomalies():
+    """
+    [TEMPORARY PHASE 1 MOCK ENDPOINT]
+    Returns simulated anomaly events for frontend compatibility.
+    Real validation anomaly queries will be connected in Phase 3/4.
+    """
     today = request.args.get("today", "2016-05-01")
     item_id = request.args.get("item_id", "")
 
@@ -121,26 +201,32 @@ def get_anomalies():
         }
     ]
 
-    # Filter by item_id if specified, and date <= today
     filtered = [
         a for a in anomalies
         if (not item_id or a["item_id"] == item_id) and a["date"] <= today
     ]
 
-    return jsonify({"anomalies": filtered}), 200
+    return jsonify({
+        "anomalies": filtered,
+        "is_demo_data": True,
+        "source": "mock_phase1"
+    }), 200
 
 
-# --- 5. Reorder Advice Endpoint ---
 @app.route("/reorder", methods=["POST"])
 @app.route("/api/reorder", methods=["POST"])
 def get_reorder():
+    """
+    [TEMPORARY PHASE 1 MOCK ENDPOINT]
+    Returns simulated replenishment advice for frontend compatibility.
+    The live reorder engine will be integrated in Phase 3/4.
+    """
     data = request.get_json() or {}
     item_id = data.get("item_id", "FOODS_1_001")
     today = data.get("today", "2016-05-01")
     current_stock = float(data.get("current_stock", 15))
     lead_time_days = int(data.get("lead_time_days", 5))
 
-    # Reorder formulas from Task B (Notebook 09)
     typical_daily = 3.9
     expected_demand = round(typical_daily * lead_time_days, 1)
     safety_stock = 4
@@ -160,7 +246,9 @@ def get_reorder():
         "reorder_point": reorder_point,
         "order_quantity": order_quantity,
         "risk": risk,
-        "message": message
+        "message": message,
+        "is_demo_data": True,
+        "source": "mock_phase1"
     }), 200
 
 
