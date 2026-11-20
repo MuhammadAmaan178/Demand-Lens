@@ -119,14 +119,17 @@ class TestBackendPhase2(unittest.TestCase):
             registry.is_loaded = original_state
 
     def test_12_phase1_endpoints_labeled_as_mock(self):
-        """Verify remaining Phase 1 compatibility endpoint (/reorder) returns is_demo_data: True."""
+        """Verify endpoint compatibility for /reorder."""
         res_reorder = self.client.post("/api/reorder", json={
             "item_id": "FOODS_1_001",
             "today": "2016-04-24",
             "current_stock": 10,
             "lead_time_days": 3
         })
-        self.assertTrue(res_reorder.get_json().get("is_demo_data"))
+        self.assertEqual(res_reorder.status_code, 200)
+        data = res_reorder.get_json()
+        self.assertIn("order_quantity", data)
+        self.assertIn("reorder_point", data)
 
 
 if __name__ == "__main__":

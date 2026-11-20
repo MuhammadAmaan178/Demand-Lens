@@ -1,8 +1,9 @@
 """
-DemandLens Flask Backend — Phase 4: Real Anomaly Detection API
+DemandLens Flask Backend — Phase 5: Real Inventory & Reorder Intelligence API
 Loads all pre-trained LightGBM models and prepared datasets once on startup.
 Provides real item catalogue, live multi-horizon forecasting (H7 & H28),
-and real historical anomaly detection queries (H7 validation).
+real historical anomaly detection queries (H7 validation),
+and live inventory replenishment & reorder advice engine.
 
 Endpoints:
   - GET  /health (and /api/health) — Service health check
@@ -10,7 +11,7 @@ Endpoints:
   - GET  /items  (and /api/items) — [Phase 3 Real] All 3,049 Store CA_1 items
   - GET  /forecast (and /api/forecast) — [Phase 3 Real] LightGBM H7 & H28 forecast
   - GET  /anomalies (and /api/anomalies) — [Phase 4 Real] H7 validation anomaly events
-  - POST /reorder (and /api/reorder) — [Mock Phase 1] Sample reorder advice (Phase 5)
+  - POST /reorder (and /api/reorder) — [Phase 5 Real] Live inventory reorder engine
 """
 
 import logging
@@ -357,47 +358,185 @@ def get_anomalies():
 
 
 # =======================================================================
-# 5. Phase 1 Mock Endpoints (Preserved as labeled DEMO data until Phase 5)
+# 5. Real Inventory & Reorder Intelligence API (Phase 5)
 # =======================================================================
+
+
+def compute_item_forecast(item_id, today_dt, horizon=7):
+    """
+    Computes real LightGBM forecasts for a single item for a given horizon (7 or 28 days).
+    Strictly protects against data leakage by slicing history <= today_dt.
+    Returns DataFrame with columns ['item_id', 'date', 'forecast'].
+    """
+    item_hist = registry.df_history[
+        (registry.df_history["item_id"] == item_id) &
+        (pd.to_datetime(registry.df_history["date"]) <= today_dt)
+    ].copy()
+
+    if item_hist.empty:
+        raise ValueError(f"No historical records found for item '{item_id}' on or before {today_dt.strftime('%Y-%m-%d')}.")
+
+    future_dates = [today_dt + pd.Timedelta(days=i) for i in range(1, horizon + 1)]
+    feat_df = features.build_features(
+        item_hist,
+        registry.df_calendar,
+        registry.feature_lists,
+        horizon=horizon,
+        future_dates=future_dates
+    )
+    cols = registry.feature_lists[f"features_{horizon}"]
+    model = registry.model_h7 if horizon == 7 else registry.model_h28
+    raw_preds = model.predict(feat_df[cols])
+    preds = np.clip(raw_preds, 0, None)
+
+    return pd.DataFrame({
+        "item_id": item_id,
+        "date": feat_df["date"],
+        "forecast": preds
+    })
 
 
 @app.route("/reorder", methods=["POST"])
 @app.route("/api/reorder", methods=["POST"])
 def get_reorder():
     """
-    [TEMPORARY PHASE 1 MOCK ENDPOINT]
-    Returns simulated replenishment advice for frontend compatibility.
-    The live reorder engine will be integrated in Phase 3/4.
+    [Phase 5 Real Endpoint]
+    Calculates live inventory replenishment & reorder advice for a single item.
+    Enforces strict input validation, horizon-appropriate model selection (H7 for lead_time <= 7,
+    H28 for lead_time > 7), error-spread variance safety buffers, and risk classification.
     """
-    data = request.get_json() or {}
-    item_id = data.get("item_id", "FOODS_1_001")
-    today = data.get("today", "2016-05-01")
-    current_stock = float(data.get("current_stock", 15))
-    lead_time_days = int(data.get("lead_time_days", 5))
+    # 1. Readiness check
+    if not registry.is_loaded:
+        return jsonify({
+            "status": "not_ready",
+            "error": "Backend models and datasets are not yet loaded. Please check /health."
+        }), 503
 
-    typical_daily = 3.9
-    expected_demand = round(typical_daily * lead_time_days, 1)
-    safety_stock = 4
-    reorder_point = int(expected_demand + safety_stock)
-    days_of_stock_left = round(current_stock / typical_daily, 1)
-    order_quantity = max(0, int(typical_daily * (lead_time_days + 7) + safety_stock - current_stock))
+    # 2. JSON payload validation
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({
+            "error": "Request body must be a valid JSON object."
+        }), 400
 
-    risk = "High" if days_of_stock_left < lead_time_days else ("Medium" if days_of_stock_left < lead_time_days + 3 else "Low")
-    message = "Order now: stock will run out before delivery." if risk == "High" else "Stock level is adequate."
+    # 3. Item ID validation
+    item_id = data.get("item_id")
+    if not item_id or not isinstance(item_id, str) or not item_id.strip():
+        return jsonify({
+            "error": "Field 'item_id' is required and must be a non-empty string."
+        }), 400
 
-    return jsonify({
-        "item_id": item_id,
-        "today": today,
-        "days_of_stock_left": days_of_stock_left,
-        "expected_demand_in_lead_time": expected_demand,
-        "safety_stock": safety_stock,
-        "reorder_point": reorder_point,
-        "order_quantity": order_quantity,
-        "risk": risk,
-        "message": message,
-        "is_demo_data": True,
-        "source": "mock_phase1"
-    }), 200
+    item_id = item_id.strip()
+    if item_id not in registry.unique_items_set:
+        return jsonify({
+            "error": f"Item '{item_id}' not found in Store CA_1 catalogue. Check /items for valid IDs."
+        }), 400
+
+    # 4. Date validation (YYYY-MM-DD within allowed validation range)
+    today = data.get("today")
+    if not today or not isinstance(today, str):
+        return jsonify({
+            "error": "Field 'today' is required and must be a valid date string (YYYY-MM-DD)."
+        }), 400
+
+    try:
+        today_dt = pd.to_datetime(today, format="%Y-%m-%d", errors="raise")
+    except Exception:
+        return jsonify({
+            "error": "Invalid date format for 'today'. Expected YYYY-MM-DD."
+        }), 400
+
+    if today < VALID_MIN_DATE or today > VALID_MAX_DATE:
+        return jsonify({
+            "error": f"Date 'today' ({today}) is outside allowed validation period ({VALID_MIN_DATE} to {VALID_MAX_DATE})."
+        }), 400
+
+    # 5. Current stock validation (integer >= 0)
+    if "current_stock" not in data or data["current_stock"] is None:
+        return jsonify({
+            "error": "Field 'current_stock' is required."
+        }), 400
+
+    stock_val = data["current_stock"]
+    if isinstance(stock_val, bool):
+        return jsonify({
+            "error": "Field 'current_stock' must be a non-negative integer (>= 0)."
+        }), 400
+
+    try:
+        stock_float = float(stock_val)
+        if not stock_float.is_integer() or stock_float < 0:
+            return jsonify({
+                "error": "Field 'current_stock' must be a non-negative integer (>= 0)."
+            }), 400
+        current_stock = int(stock_float)
+    except (ValueError, TypeError):
+        return jsonify({
+            "error": "Field 'current_stock' must be a valid non-negative integer."
+        }), 400
+
+    # 6. Lead time validation (integer between 1 and 28)
+    if "lead_time_days" not in data or data["lead_time_days"] is None:
+        return jsonify({
+            "error": "Field 'lead_time_days' is required."
+        }), 400
+
+    lt_val = data["lead_time_days"]
+    if isinstance(lt_val, bool):
+        return jsonify({
+            "error": "Field 'lead_time_days' must be an integer between 1 and 28."
+        }), 400
+
+    try:
+        lt_float = float(lt_val)
+        if not lt_float.is_integer() or int(lt_float) < 1 or int(lt_float) > 28:
+            return jsonify({
+                "error": "Field 'lead_time_days' must be an integer between 1 and 28."
+            }), 400
+        lead_time_days = int(lt_float)
+    except (ValueError, TypeError):
+        return jsonify({
+            "error": "Field 'lead_time_days' must be a valid integer between 1 and 28."
+        }), 400
+
+    # 7. Model selection and live inference
+    try:
+        if lead_time_days <= 7:
+            h7_preds_df = compute_item_forecast(item_id, today_dt, horizon=7)
+            h28_preds_df = pd.DataFrame(columns=["item_id", "date", "forecast"])
+        else:
+            h7_preds_df = pd.DataFrame(columns=["item_id", "date", "forecast"])
+            h28_preds_df = compute_item_forecast(item_id, today_dt, horizon=28)
+
+        # 8. Compute reorder advice using validated engine
+        advice = reorder.reorder_advice(
+            item_id=item_id,
+            current_stock=current_stock,
+            lead_time_days=lead_time_days,
+            h7_preds_df=h7_preds_df,
+            h28_preds_df=h28_preds_df,
+            error_spread_df=registry.df_item_error_spread,
+            review_days=7
+        )
+
+        # 9. Format response for frontend compatibility
+        advice["today"] = today
+        if advice["risk"] == "High":
+            advice["message"] = "Order now: stock will run out before delivery."
+        elif advice["risk"] == "Medium":
+            advice["message"] = "Stock is running low: plan replenishment soon."
+        else:
+            advice["message"] = "Stock level is adequate."
+
+        return jsonify(advice), 200
+
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
+    except Exception as e:
+        logger.error(f"Error computing reorder advice for {item_id} at {today}: {e}", exc_info=True)
+        return jsonify({
+            "error": f"Failed to compute reorder advice: {str(e)}"
+        }), 500
 
 
 if __name__ == "__main__":

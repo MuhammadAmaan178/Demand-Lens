@@ -244,15 +244,17 @@ class DemandLensPhase3TestCase(unittest.TestCase):
     # 5. Preservation of Labeled Mock Endpoints
     # -------------------------------------------------------------------
     def test_14_mock_endpoints_labeled_cleanly(self):
-        """Verify remaining Phase 1 endpoint (/reorder) remains available and labeled as demo data."""
-        # POST /reorder
-        res_reorder = self.client.post("/reorder", json={"item_id": "FOODS_1_001", "today": "2016-04-24"})
+        """Verify /reorder endpoint remains available with real calculations in Phase 5."""
+        res_reorder = self.client.post("/reorder", json={
+            "item_id": "FOODS_1_001",
+            "today": "2016-04-24",
+            "current_stock": 10,
+            "lead_time_days": 5
+        })
         self.assertEqual(res_reorder.status_code, 200)
         data_reorder = res_reorder.get_json()
-        self.assertTrue(data_reorder.get("is_demo_data"))
-        self.assertEqual(res_reorder.status_code, 200)
-        data_reorder = res_reorder.get_json()
-        self.assertTrue(data_reorder.get("is_demo_data"))
+        self.assertIn("order_quantity", data_reorder)
+        self.assertIn("reorder_point", data_reorder)
 
 
 if __name__ == "__main__":
