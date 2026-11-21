@@ -47,8 +47,22 @@ except Exception as err:
 
 
 # =======================================================================
-# 1. Health & Diagnostic Endpoints (Phase 2)
+# 1. Root, Health & Diagnostic Endpoints (Phase 2)
 # =======================================================================
+
+@app.route("/", methods=["GET"])
+def root():
+    """
+    Root entry point.
+    Returns basic service status and links to the health endpoint.
+    """
+    return jsonify({
+        "service": "DemandLens Backend",
+        "status": "running",
+        "message": "DemandLens API is running. Visit /api/health to check backend readiness.",
+        "health_endpoint": "/api/health"
+    }), 200
+
 
 @app.route("/health", methods=["GET"])
 @app.route("/api/health", methods=["GET"])

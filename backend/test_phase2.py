@@ -131,6 +131,16 @@ class TestBackendPhase2(unittest.TestCase):
         self.assertIn("order_quantity", data)
         self.assertIn("reorder_point", data)
 
+    def test_13_root_endpoint(self):
+        """Verify GET / returns 200 OK with service info and health_endpoint pointer."""
+        res = self.client.get("/")
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data.get("service"), "DemandLens Backend")
+        self.assertEqual(data.get("status"), "running")
+        self.assertEqual(data.get("health_endpoint"), "/api/health")
+        self.assertIn("Visit /api/health", data.get("message", ""))
+
 
 if __name__ == "__main__":
     unittest.main()
