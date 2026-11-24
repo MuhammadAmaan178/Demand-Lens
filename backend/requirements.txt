@@ -1,3 +1,5 @@
+# Python 3.12 is recommended: prebuilt binary wheels exist on PyPI for all exact pinned versions below.
+# Note: Python 3.14 lacks prebuilt binary wheels for pandas==2.2.3 and scikit-learn==1.6.1.
 flask>=3.0.0,<4.0.0
 flask-cors>=4.0.0,<5.0.0
 

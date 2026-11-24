@@ -333,9 +333,12 @@ def get_anomalies():
                 "date": pd.to_datetime(row["date"]).strftime("%Y-%m-%d"),
                 "sales": int(row["sales"]),
                 "forecast": round(float(row["forecast"]), 2),
+                "residual": round(float(row["residual"]), 2),
                 "direction": direction,
-                "reason": str(row["reason"]),
-                "flagged_by": flag_map.get(str(row["flagged_by"]), str(row["flagged_by"]))
+                "group": str(row["group"]),
+                "is_anomaly": bool(row["is_anomaly"]),
+                "flagged_by": flag_map.get(str(row["flagged_by"]), str(row["flagged_by"])),
+                "reason": str(row["reason"])
             })
 
         # Summary statistics matching returned records

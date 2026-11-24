@@ -76,8 +76,8 @@ Alternatively, you can place all these files together in a top-level folder name
 ## 3. Environment Setup
 
 ### Required Runtimes
-- **Python:** 3.10 to 3.12 (matching Google Colab)
-- **Node.js:** 18 or higher (tested on Node v20 / v24)
+- **Python:** 3.12 recommended (PyPI has prebuilt binary wheels for all pinned dependencies: `lightgbm==4.6.0`, `scikit-learn==1.6.1`, `pandas==2.2.3`, `numpy==2.4.6`, `joblib==1.6.0`, `pyarrow==23.0.1`. Note: Python 3.14 lacks prebuilt binary wheels for `pandas==2.2.3` and `scikit-learn==1.6.1`).
+- **Node.js:** 18 or higher (tested on Node v20 / v22)
 - **npm:** 9 or higher
 
 ### Step 1: Clone and Set Up Python Backend
@@ -150,113 +150,75 @@ npm run dev
 All backend endpoints are prefixed with `/api` (or accessed bare).
 
 ### 1. Root & Health Check
-- **Route:** `GET /api/health`
-- **Description:** Checks if the server is up and models are loaded into memory.
+- **Route:** `GET /health` (or `GET /api/health`)
+- **Description:** Checks if the server is up and models/datasets are loaded into memory.
 - **Example Response (200 OK):**
   ```json
   {
+    "artifacts": "loaded",
+    "service": "DemandLens Backend",
     "status": "ok",
-    "models_loaded": true,
-    "items_count": 3049
+    "version": "1.0.0"
   }
   ```
 - **Example Response (503 Service Unavailable when files missing):**
   ```json
   {
-    "status": "error",
-    "message": "Backend models and datasets are not ready yet.",
-    "models_loaded": false
+    "error": "Required models or datasets failed to load. See /debug/status for diagnosis.",
+    "service": "DemandLens Backend",
+    "status": "not_ready",
+    "version": "1.0.0"
   }
   ```
 
 ### 2. Diagnostic Status
 - **Route:** `GET /debug/status`
-- **Description:** Reports the presence of all required model and data files.
-- **Example Response:**
-  ```json
-  {
-    "status": "ready",
-    "models_loaded": true,
-    "missing_files": []
-  }
-  ```
+- **Description:** Reports whether required models, datasets, and feature lists loaded successfully.
 
 ### 3. Items List
-- **Route:** `GET /api/items`
-- **Description:** Returns the list of 3,049 items for the header selector.
-- **Example Response:**
+- **Route:** `GET /items` (or `GET /api/items`)
+- **Description:** Returns the complete catalogue of 3,049 items for Store CA_1 with departments and sales groups.
+- **Example Response (200 OK):**
   ```json
   {
     "count": 3049,
     "items": [
       {
-        "item_id": "FOODS_1_001_CA_1",
         "department": "FOODS_1",
-        "group": "Low_Intermittent"
+        "group": "Slow Sellers",
+        "item_id": "FOODS_1_001"
       }
     ]
   }
   ```
 
 ### 4. Demand Forecast
-- **Route:** `GET /api/forecast?item_id=FOODS_1_001_CA_1&today=2016-04-24`
+- **Route:** `GET /forecast?item_id=FOODS_1_001&today=2016-04-24` (or `/api/forecast`)
 - **Parameters:**
-  - `item_id` (string, required): Item identifier.
-  - `today` (date string `YYYY-MM-DD`, required): Pretend date between `2016-03-28` and `2016-04-24`.
-- **Example Response:**
-  ```json
-  {
-    "item_id": "FOODS_1_001_CA_1",
-    "today": "2016-04-24",
-    "history": [
-      { "date": "2016-04-18", "sales": 2.0 },
-      { "date": "2016-04-19", "sales": 1.0 }
-    ],
-    "forecast_7": [
-      { "date": "2016-04-25", "value": 1.4 },
-      { "date": "2016-04-26", "value": 1.1 }
-    ],
-    "forecast_28": [
-      { "date": "2016-04-25", "value": 1.2 },
-      { "date": "2016-04-26", "value": 1.0 }
-    ]
-  }
-  ```
+  - `item_id` (string, required): Item identifier (e.g. `FOODS_1_001`).
+  - `today` (date string `YYYY-MM-DD`, required): Pretend date between `2016-03-28` and `2016-04-24` (inclusive).
+- **Behavior:** History is sliced up to and including `today` (no future leakage). Forecasts start strictly on `today + 1`.
 
 ### 5. Anomaly Detection
-- **Route:** `GET /api/anomalies?today=2016-04-24&item_id=FOODS_1_001_CA_1`
+- **Route:** `GET /anomalies?today=2016-04-24&item_id=FOODS_1_001` (or `/api/anomalies`)
 - **Parameters:**
-  - `today` (date string `YYYY-MM-DD`, required): Cutoff date.
+  - `today` (date string `YYYY-MM-DD`, required): Cutoff date between `2016-03-28` and `2016-04-24` (returns records up to and including `today`).
   - `item_id` (string, optional): Specific item to filter.
-- **Example Response:**
-  ```json
-  {
-    "count": 1,
-    "anomalies": [
-      {
-        "item_id": "FOODS_1_001_CA_1",
-        "date": "2016-04-10",
-        "sales": 12.0,
-        "forecast": 2.3,
-        "direction": "spike",
-        "reason": "price change",
-        "flagged_by": "both"
-      }
-    ]
-  }
-  ```
+- **Returns all 10 schema fields:**
+  `item_id`, `date`, `sales`, `forecast`, `residual`, `direction`, `group`, `is_anomaly`, `flagged_by`, `reason`.
 
 ### 6. Inventory & Reorder Advice
-- **Route:** `POST /api/reorder`
+- **Route:** `POST /reorder` (or `/api/reorder`)
 - **Body JSON:**
   ```json
   {
-    "item_id": "FOODS_1_001_CA_1",
+    "item_id": "FOODS_1_001",
     "today": "2016-04-24",
     "current_stock": 15,
     "lead_time_days": 5
   }
   ```
+- **Validation:** `lead_time_days` must be an integer between 1 and 28; `current_stock` must be a non-negative integer. Model selection: H7 model if `lead_time_days <= 7`, H28 model if `lead_time_days > 7`. Formula: `reorder_point = expected_demand_in_lead_time + safety_stock`.
 - **Example Response:**
   ```json
   {
@@ -285,7 +247,7 @@ Follow these steps for a live five-minute presentation:
 
 1. **Start Services:** Start the Flask backend (`python app.py`) and Vite frontend (`npm run dev`). Open `http://localhost:5173`.
 2. **Set Pretend Date:** In the top header date picker, select pretend today `2016-04-24` (real Walmart sales in this dataset end on `2016-05-22`).
-3. **Pick an Item:** In the top item dropdown, search and select `FOODS_1_001_CA_1` (or any item from `FOODS`, `HOBBIES`, or `HOUSEHOLD`).
+3. **Pick an Item:** In the top item dropdown, search and select `FOODS_1_001` (or any item from `FOODS`, `HOBBIES`, or `HOUSEHOLD`).
 4. **Inspect Forecasts (/forecast):**
    - Click **Forecast** in the left sidebar.
    - Toggle between **7 Days** and **28 Days**.
